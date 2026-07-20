@@ -249,9 +249,10 @@ final class ImplementationTests: SourceKitLSPTestCase {
   }
 
   func testOverrideProtocolFunc() async throws {
-    // TODO: We should not be reporting locations 4, 5 and 7 because they don't actually contain myFunc.
-    // We should, however, be reporting location 6. (https://github.com/swiftlang/sourcekit-lsp/issues/1600)
-
+    // https://github.com/swiftlang/sourcekit-lsp/issues/1600
+    // Report actual method implementations only: not subclass names (4, 5) or
+    // conformance-only extensions (7). Retroactive methods declared in the type
+    // body (6) must still be found via the conformance extension's index relation.
     try await testImplementation(
       """
       protocol MyProto {
@@ -277,7 +278,7 @@ final class ImplementationTests: SourceKitLSPTestCase {
         func 8️⃣myFunc() { }
       }
       """,
-      expectedLocations: ["2️⃣", "3️⃣", "4️⃣", "5️⃣", "7️⃣", "8️⃣"]
+      expectedLocations: ["2️⃣", "3️⃣", "6️⃣", "8️⃣"]
     )
   }
 
@@ -305,6 +306,46 @@ final class ImplementationTests: SourceKitLSPTestCase {
     XCTAssertEqual(
       response?.locations,
       [Location(uri: try project.uri(for: "b.swift"), range: Range(try project.position(of: "2️⃣", in: "b.swift")))]
+    )
+  }
+
+  /// C++ virtual overrides often share a USR between the in-class declaration and the out-of-line definition.
+  /// Implementation must preserve both explicit locations (not collapse to a single primary definition).
+  func testCppVirtualOverridePreservesDeclarationAndDefinition() async throws {
+    let project = try await SwiftPMTestProject(
+      files: [
+        "MyLibrary/include/empty.h": "",
+        "MyLibrary/Test.cpp": """
+        struct Base {
+          virtual void 1️⃣foo();
+        };
+
+        struct Derived : Base {
+          void 2️⃣foo() override;
+        };
+
+        void Base::foo() {}
+        void Derived::3️⃣foo() {}
+        """,
+      ],
+      enableBackgroundIndexing: true
+    )
+
+    let (uri, positions) = try project.openDocument("Test.cpp", language: .cpp)
+
+    let response = try await project.testClient.send(
+      ImplementationRequest(
+        textDocument: TextDocumentIdentifier(uri),
+        position: positions["1️⃣"]
+      )
+    )
+
+    XCTAssertEqual(
+      response?.locations,
+      [
+        Location(uri: uri, range: Range(positions["2️⃣"])),
+        Location(uri: uri, range: Range(positions["3️⃣"])),
+      ]
     )
   }
 }
