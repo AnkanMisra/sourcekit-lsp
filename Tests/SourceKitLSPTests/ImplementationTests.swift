@@ -308,4 +308,44 @@ final class ImplementationTests: SourceKitLSPTestCase {
       [Location(uri: try project.uri(for: "b.swift"), range: Range(try project.position(of: "2️⃣", in: "b.swift")))]
     )
   }
+
+  /// C++ virtual overrides often share a USR between the in-class declaration and the out-of-line definition.
+  /// Implementation must preserve both explicit locations (not collapse to a single primary definition).
+  func testCppVirtualOverridePreservesDeclarationAndDefinition() async throws {
+    let project = try await SwiftPMTestProject(
+      files: [
+        "MyLibrary/include/empty.h": "",
+        "MyLibrary/Test.cpp": """
+        struct Base {
+          virtual void 1️⃣foo();
+        };
+
+        struct Derived : Base {
+          void 2️⃣foo() override;
+        };
+
+        void Base::foo() {}
+        void Derived::3️⃣foo() {}
+        """,
+      ],
+      enableBackgroundIndexing: true
+    )
+
+    let (uri, positions) = try project.openDocument("Test.cpp", language: .cpp)
+
+    let response = try await project.testClient.send(
+      ImplementationRequest(
+        textDocument: TextDocumentIdentifier(uri),
+        position: positions["1️⃣"]
+      )
+    )
+
+    XCTAssertEqual(
+      response?.locations,
+      [
+        Location(uri: uri, range: Range(positions["2️⃣"])),
+        Location(uri: uri, range: Range(positions["3️⃣"])),
+      ]
+    )
+  }
 }
